@@ -1,5 +1,7 @@
 Base.@kwdef struct ColumnGeneration <: AbstractAlgorithm
-    option::Bool = false
+    feasibility_tol::Float64 = 1e-5
+    optimality_tol::Float64 = 1e-5
+    max_nb_iterations::Int = 100
 end
 
 mutable struct ColumnGenTmpRecord
@@ -47,12 +49,12 @@ end
 
 function run!(algo::ColumnGeneration, form, node)
     @logmsg LogLevel(-1) "Run ColumnGeneration."
-    algdataa = ColumnGenTmpRecord(form.master.obj_sense, node.incumbents)
-    cg_rec = cg_main_loop(algdataa, form, 2)
+    algdata = ColumnGenTmpRecord(form.master.obj_sense, node.incumbents)
+    cg_rec = cg_main_loop(algo, algdata, form, 2)
     if should_do_ph_1(cg_rec)
         record!(form, node)
         set_ph_one(form.master)
-        cg_rec = cg_main_loop(algdataa, form, 1)
+        cg_rec = cg_main_loop(algo, algdata, form, 1)
     end
     if cg_rec.proven_infeasible
         cg_rec.incumbents = Incumbents(getsense(cg_rec.incumbents))
@@ -82,7 +84,39 @@ function update_pricing_target!(spform::Formulation)
     # println("pricing target will only be needed after automating convexity constraints")
 end
 
-function insert_cols_in_master!(masterform::Formulation,
+function check_if_col_already_in_pool(masterform::Formulation,
+                                      spform_uid::Int,
+                                      mc_id::VarId,
+                                      sp_sol::PrimalSolution{S}) where {S}
+
+
+    primal_dwsp_sols = getprimaldwspsolmatrix(masterform)
+
+    for (col_id, col) in columns(primal_dwsp_sols)
+        #@show col
+        is_identical = true
+        for (var_id, var_val) in getrecords(col)
+            #@show (var_id, var_val)
+            if !haskey(sp_sol, var_id)
+                is_identical = false
+                break
+            end
+            if sp_sol[var_id] != var_val
+                is_identical = false
+                break
+            end
+        end
+        if is_identical
+            return col_id
+        end
+    end
+    
+    return mc_id
+end
+
+
+function insert_cols_in_master!(algo::ColumnGeneration,
+                                masterform::Formulation,
                                spform::Formulation,
                                sp_sols::Vector{PrimalSolution{S}}) where {S}
 
@@ -90,7 +124,7 @@ function insert_cols_in_master!(masterform::Formulation,
     nb_of_gen_col = 0
 
     for sp_sol in sp_sols
-        if contrib_improves_mlp(getbound(sp_sol))
+        if reduced_cost_to_improve_lp(getbound(sp_sol); tolerance = algo.optimality_tol)
             nb_of_gen_col += 1
             ref = getvarcounter(masterform) + 1
             name = string("MC", sp_uid, "_", ref)
@@ -104,6 +138,12 @@ function insert_cols_in_master!(masterform::Formulation,
                 masterform, name, sp_sol, duty; lb = lb, ub = ub,
                 kind = kind, sense = sense
             )
+            mc_id = getid(mc)
+            existing_mc_id = check_if_col_already_in_pool(masterform, sp_uid, mc_id, sp_sol)
+            if existing_mc_id != mc_id
+                @show "ERROR column already exist"
+            end
+            
             @logmsg LogLevel(-2) string("Generated column : ", name)
 
             # TODO: check if column exists
@@ -126,8 +166,6 @@ function insert_cols_in_master!(masterform::Formulation,
     return nb_of_gen_col
 end
 
-contrib_improves_mlp(sp_primal_bound::PrimalBound{MinSense}) = (sp_primal_bound < 0.0 - 1e-8)
-contrib_improves_mlp(sp_primal_bound::PrimalBound{MaxSense}) = (sp_primal_bound > 0.0 + 1e-8)
 
 function compute_pricing_db_contrib(spform::Formulation,
                                     sp_sol_primal_bound::PrimalBound{S},
@@ -135,7 +173,7 @@ function compute_pricing_db_contrib(spform::Formulation,
                                     sp_ub::Float64) where {S}
     # Since convexity constraints are not automated and there is no stab
     # the pricing_dual_bound_contrib is just the reduced cost * multiplicty
-    if contrib_improves_mlp(sp_sol_primal_bound)
+    if reduced_cost_to_improve_lp(sp_sol_primal_bound)
         contrib = sp_sol_primal_bound * sp_ub
     else
         contrib = sp_sol_primal_bound * sp_lb
@@ -143,7 +181,8 @@ function compute_pricing_db_contrib(spform::Formulation,
     return contrib
 end
 
-function solve_sp_to_gencol!(masterform::Formulation,
+function solve_sp_to_gencol!(algo::ColumnGeneration,
+                             masterform::Formulation,
                      spform::Formulation,
                      dual_sol::DualSolution,
                      sp_lb::Float64,
@@ -191,14 +230,15 @@ function solve_sp_to_gencol!(masterform::Formulation,
         return flag_is_sp_infeasible
     end
 
-    insertion_status = insert_cols_in_master!(
+    insertion_status = insert_cols_in_master!(algo,
         masterform, spform, getprimalsols(opt_result)
     )
 
     return insertion_status, pricing_db_contrib
 end
 
-function solve_sps_to_gencols!(reformulation::Reformulation,
+function solve_sps_to_gencols!(algo::ColumnGeneration,
+                               reformulation::Reformulation,
                   dual_sol::DualSolution{S},
                   sp_lbs::Dict{FormId, Float64},
                   sp_ubs::Dict{FormId, Float64}) where {S}
@@ -209,7 +249,7 @@ function solve_sps_to_gencols!(reformulation::Reformulation,
     sps = get_dw_pricing_sp(reformulation)
     for spform in sps
         sp_uid = getuid(spform)
-        gen_status, contrib = solve_sp_to_gencol!(masterform, spform, dual_sol, sp_lbs[sp_uid], sp_ubs[sp_uid])
+        gen_status, contrib = solve_sp_to_gencol!(algo, masterform, spform, dual_sol, sp_lbs[sp_uid], sp_ubs[sp_uid])
 
         if gen_status > 0
             nb_new_cols += gen_status
@@ -245,11 +285,13 @@ function solve_restricted_master!(master::Formulation)
     getprimalsols(opt_result), getdualsols(opt_result), elapsed_time)
 end
 
-function generatecolumns!(algdata::ColumnGenTmpRecord, reform::Reformulation,
+function generatecolumns!(algo::ColumnGeneration,
+                          algdata::ColumnGenTmpRecord,
+                          reform::Reformulation,
                           master_val, dual_sol, sp_lbs, sp_ubs)
     nb_new_columns = 0
     while true # TODO Replace this condition when starting implement stabilization
-        nb_new_col, sp_db_contrib =  solve_sps_to_gencols!(reform, dual_sol, sp_lbs, sp_ubs)
+        nb_new_col, sp_db_contrib =  solve_sps_to_gencols!(algo, reform, dual_sol, sp_lbs, sp_ubs)
         nb_new_columns += nb_new_col
         update_lagrangian_db!(algdata, master_val, sp_db_contrib)
         if nb_new_col < 0
@@ -264,7 +306,8 @@ end
 ph_one_infeasible_db(db::DualBound{MinSense}) = getvalue(db) > (0.0 + 1e-5)
 ph_one_infeasible_db(db::DualBound{MaxSense}) = getvalue(db) < (0.0 - 1e-5)
 
-function cg_main_loop(algdata::ColumnGenTmpRecord,
+function cg_main_loop(algo::ColumnGeneration,
+                      algdata::ColumnGenTmpRecord,
                       reformulation::Reformulation, 
                       phase::Int)::ColumnGenerationRecord
     nb_cg_iterations = 0
@@ -305,7 +348,7 @@ function cg_main_loop(algdata::ColumnGenTmpRecord,
 
         # generate new columns by solving the subproblems
         sp_time = @elapsed begin
-            nb_new_col = generatecolumns!(
+            nb_new_col = generatecolumns!(algo,
                 algdata, reformulation, master_val, dual_sols[1], sp_lbs, sp_ubs
             )
         end
@@ -335,7 +378,7 @@ function cg_main_loop(algdata::ColumnGenTmpRecord,
             algdata.has_converged = true
             return ColumnGenerationRecord(algdata.incumbents, false)
         end
-        if nb_cg_iterations > 1000 ##TDalgdata.max_nb_cg_iterations
+        if nb_cg_iterations > algo.max_nb_iterations
             @warn "Maximum number of column generation iteration is reached."
             return ColumnGenerationRecord(algdata.incumbents, false)
         end

@@ -209,3 +209,20 @@ function Base.filter(f::Function, sol::T) where {T<:AbstractSolution}
     end
     return T(bound, newsol) 
 end
+
+
+reduced_cost_to_improve_lp(reduced_cost::PrimalBound{MinSense}; tolerance::Float64 =  1e-8) = (reduced_cost < 0.0 - tolerance)
+reduced_cost_to_improve_lp(reduced_cost::PrimalBound{MaxSense}; tolerance::Float64 =  1e-8) = (reduced_cost > 0.0 + tolerance)
+
+
+function Base.haskey(s::AbstractSolution, id::I) where {I}
+    Base.haskey(s.sol, id)
+end
+
+function Base.getindex(s::AbstractSolution, id::I) where {I}
+    Base.get(s.sol, id, zero(Float64))
+end
+
+function Base.setindex!(s::AbstractSolution, val, id::I) where {I}
+    s.sol[id] = val
+end

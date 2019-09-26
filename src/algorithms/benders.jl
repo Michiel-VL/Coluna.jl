@@ -285,20 +285,26 @@ function solve_sp_to_gencut!(
         spsol_relaxed = contains(primalsol, BendSpSlackFirstStageVar)
 
         bendsp_primal_bound_contrib = 0.0
-        # compute bendsp_primal_bound_contrib which stands for the sum of nu var,
-        # i.e. the second stage cost as it would appear as 
-        # the separation subproblem objective in a pure phase 2
-        for (var, value) in filter(var -> getduty(var) <: BendSpSlackSecondStageCostVar, getsol(primalsol))
-            if S == MinSense
-                bendsp_primal_bound_contrib += value
-            else
-                bendsp_primal_bound_contrib -= value
+       
+        if spsol_relaxed # current second stage solution is not feasible
+            # set priomal bound to Inf
+            bendsp_primal_bound_contrib = defaultprimalboundvalue{getobjsense(masterform)}() # set to Inf
+        else
+            # compute bendsp_primal_bound_contrib which stands for the sum of nu var,
+            # i.e. the second stage cost as it would appear as 
+            # the separation subproblem objective in a pure phase 2
+            for (var, value) in filter(var -> getduty(var) <: BendSpSlackSecondStageCostVar, getsol(primalsol))
+                if S == MinSense
+                    bendsp_primal_bound_contrib += value
+                else
+                    bendsp_primal_bound_contrib -= value
+                end
             end
         end
         @show bendsp_primal_bound_contrib
         
         if - algo.feasibility_tol <= getprimalbound(optresult) <= algo.feasibility_tol
-        # no cuts are generated since there is no violation 
+            # no cuts are generated since there is no violation 
             if spsol_relaxed
                 if algdata.spform_phase[spform_uid] == PurePhase2
                     @show "ERROR : in PurePhase2, art var were not supposed to be in sp forlumation "
@@ -455,7 +461,6 @@ function generatecuts!(
     end
     # end TODO
     primal_bound = PrimalBound{S}(getvalue(master_primal_sol) + pb_correction)
-    #setvalue!(master_primal_sol, getvalue(master_primal_sol) + pb_correction)
     return nb_new_cuts, spsols_relaxed, primal_bound
 end
 
@@ -506,10 +511,10 @@ function bend_cutting_plane_main_loop(
         @show dual_bound
         
                 
-        reset_bendersep_phase!(algdata, reform) # phase = HybridPhase
+        reset_bendersep_phase!(algdata, reform) # for all sp, set phase = HybridPhase
         
 
-        for upto_phase in (HybridPhase,PurePhase1,PurePhase2)  # loop on separation phases
+        for upto_phase in (HybridPhase,PurePhase1,PurePhase2)  # loop on separation last phases
             
             nb_bc_iterations += 1
 

@@ -1,5 +1,5 @@
 Base.@kwdef struct ColumnGeneration <: AbstractAlgorithm
-    option::Bool = false
+    parallel_pricing::Bool = false
 end
 
 mutable struct ColumnGenTmpRecord
@@ -47,12 +47,12 @@ end
 
 function run!(algo::ColumnGeneration, form, node)
     @logmsg LogLevel(-1) "Run ColumnGeneration."
-    algdataa = ColumnGenTmpRecord(form.master.obj_sense, node.incumbents)
+    algdata = ColumnGenTmpRecord(form.master.obj_sense, node.incumbents)
     cg_rec = cg_main_loop(algdataa, form, 2)
     if should_do_ph_1(cg_rec)
         record!(form, node)
         set_ph_one(form.master)
-        cg_rec = cg_main_loop(algdataa, form, 1)
+        cg_rec = cg_main_loop(algdata, form, 1)
     end
     if cg_rec.proven_infeasible
         cg_rec.incumbents = Incumbents(getsense(cg_rec.incumbents))

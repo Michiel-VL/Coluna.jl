@@ -15,6 +15,8 @@ struct Id{VC <: AbstractVarConstr}
     _hash::Int
 end
 
+Id{VC}() where{VC}  = Id{VC}(-1, -1, -1, -1) 
+
 function _create_hash(uid::Int, form_uid::Int, proc_uid::Int)
     return (
         uid * _globals_.MAX_FORMULATIOS * _globals_.MAX_PROCESSES

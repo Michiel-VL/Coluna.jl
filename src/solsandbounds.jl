@@ -214,6 +214,8 @@ end
 reduced_cost_to_improve_lp(reduced_cost::PrimalBound{MinSense}; tolerance::Float64 =  1e-8) = (reduced_cost < 0.0 - tolerance)
 reduced_cost_to_improve_lp(reduced_cost::PrimalBound{MaxSense}; tolerance::Float64 =  1e-8) = (reduced_cost > 0.0 + tolerance)
 
+violates_feasibility_tol(db::DualBound{MinSense}; tolerance::Float64 =  1e-5) = getvalue(db) > (0.0 + tolerance)
+violates_feasibility_tol(db::DualBound{MaxSense}; tolerance::Float64 =  1e-5) = getvalue(db) < (0.0 - tolerance)
 
 function Base.haskey(s::AbstractSolution, id::I) where {I}
     Base.haskey(s.sol, id)

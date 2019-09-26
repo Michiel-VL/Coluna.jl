@@ -153,10 +153,45 @@ function update_benders_sp_target!(spform::Formulation)
     # println("benders_sp target will only be needed after automating convexity constraints")
 end
 
-function insert_cuts_in_master!(
-    algdata, masterform::Formulation, spform::Formulation,
-    spresult::OptimizationResult{S}
-) where {S}
+function check_if_cut_already_in_pool(masterform::Formulation,
+                                      dual_sol::DualSolution{S})::Tuple{Bool,ConstrId} where {S}
+
+
+    dual_bendsp_sols = getdualbendspsolmatrix(masterform)
+
+    for (cut_id, cut) in columns(dual_bendsp_sols)
+        #@show col
+        factor = 1.0
+        is_identical = true
+        for (constr_id, constr_val) in getrecords(cut)
+            #@show (var_id, var_val)
+            if !haskey(dual_sol, constr_id)
+                is_identical = false
+                break
+            end
+            if dual_sol[constr_id] != factor  * constr_val
+                if factor == 1.0
+                    factor = dual_sol[constr_id] / constr_val
+                else
+                    is_identical = false
+                    break
+                end
+            end
+        end
+        if is_identical
+            return (true, cut_id)
+        end
+    end
+    
+    return (false, ConstrId())
+end
+
+function insert_cuts_in_master!(algo::BendersCutGeneration, 
+                                algdata::BendersCutGenData,
+                                masterform::Formulation,
+                                spform::Formulation,
+                                spresult::OptimizationResult{S}
+                                ) where {S}
     primal_sols = getprimalsols(spresult)
     dual_sols = getdualsols(spresult)
     sp_uid = getuid(spform)
@@ -172,7 +207,13 @@ function insert_cuts_in_master!(
         primal_sol = primal_sols[k]
         dual_sol = dual_sols[k]
         # the solution value represent the cut violation at this stage
-        if getvalue(dual_sol) > 0.0001 || algdata.spform_phase[getuid(spform)] == PurePhase1 # TODO the cut feasibility tolerance
+        if getvalue(dual_sol) > algo.feasibility_tol || algdata.spform_phase[getuid(spform)] == PurePhase1 # TODO the cut feasibility tolerance
+
+            (already_exists, existing_bc_id) = check_if_cut_already_in_pool(masterform, dual_sol)
+            if already_exists 
+                @show "WARNING cut already exist" existing_bc_id
+                continue
+            end
             nb_of_gen_cuts += 1
             ref = getconstrcounter(masterform) + 1
             name = string("BC", sp_uid, "_", ref)
@@ -185,22 +226,7 @@ function insert_cuts_in_master!(
             )
           
             @logmsg LogLevel(-2) string("Generated cut : ", name)
-            #@show bc
-
-            # TODO: check if cut exists
-            #== mc_id = getid(mc)
-            id_of_existing_mc = - 1
-            primalspsol_matrix = getprimaldwspsolmatrix(masterform)
-            for (col, col_members) in columns(primalspsol_matrix)
-                if (col_members == primalspsol_matrix[:, mc_id])
-                    id_of_existing_mc = col[1]
-                    break
-                end
-            end
-            if (id_of_existing_mc != mc_id)
-                @warn string("column already exists as", id_of_existing_mc)
-            end
-            ==#
+            
         end
     end
 
@@ -216,9 +242,13 @@ function compute_benders_sp_lagrangian_bound_contrib(
 end
 
 function solve_sp_to_gencut!(
-    algo::BendersCutGeneration, algdata::BendersCutGenData, masterform::Formulation, 
-    spform::Formulation, master_primal_sol::PrimalSolution{S},
-    master_dual_sol::DualSolution{S}, up_to_phase::FormulationPhase
+    algo::BendersCutGeneration,
+    algdata::BendersCutGenData,
+    masterform::Formulation, 
+    spform::Formulation,
+    master_primal_sol::PrimalSolution{S},
+    master_dual_sol::DualSolution{S},
+    up_to_phase::FormulationPhase
 ) where {S}
 
     flag_is_sp_infeasible = -1
@@ -316,7 +346,7 @@ function solve_sp_to_gencut!(
             end
             
         else # a cut can be generated since there is a violation
-            insertion_status = insert_cuts_in_master!(algdata, masterform, spform, optresult)
+            insertion_status = insert_cuts_in_master!(algo, algdata, masterform, spform, optresult)
             if spsol_relaxed &&  algo.option_increase_cost_in_hybrid_phase
                 #check algdata.spform_phase[spform_uid] == HybridPhase
                 # Todo increase cost

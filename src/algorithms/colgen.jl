@@ -85,9 +85,7 @@ function update_pricing_target!(spform::Formulation)
 end
 
 function check_if_col_already_in_pool(masterform::Formulation,
-                                      spform_uid::Int,
-                                      mc_id::VarId,
-                                      sp_sol::PrimalSolution{S}) where {S}
+                                      sp_sol::PrimalSolution{S})::Tuple{Bool,VarId}  where {S} 
 
 
     primal_dwsp_sols = getprimaldwspsolmatrix(masterform)
@@ -107,24 +105,31 @@ function check_if_col_already_in_pool(masterform::Formulation,
             end
         end
         if is_identical
-            return col_id
+            return (true, col_id)
         end
     end
     
-    return mc_id
+    return (false, VarId())
 end
 
 
 function insert_cols_in_master!(algo::ColumnGeneration,
                                 masterform::Formulation,
-                               spform::Formulation,
-                               sp_sols::Vector{PrimalSolution{S}}) where {S}
+                                spform::Formulation,
+                                sp_sols::Vector{PrimalSolution{S}}) where {S}
 
     sp_uid = getuid(spform)
     nb_of_gen_col = 0
 
     for sp_sol in sp_sols
         if reduced_cost_to_improve_lp(getbound(sp_sol); tolerance = algo.optimality_tol)
+           
+            (already_exists, existing_mc_id) = check_if_col_already_in_pool(masterform, sp_sol)
+            if already_exists
+                @show "ERROR column already exist" existing_mc_id
+                continue
+            end
+
             nb_of_gen_col += 1
             ref = getvarcounter(masterform) + 1
             name = string("MC", sp_uid, "_", ref)
@@ -139,27 +144,9 @@ function insert_cols_in_master!(algo::ColumnGeneration,
                 kind = kind, sense = sense
             )
             mc_id = getid(mc)
-            existing_mc_id = check_if_col_already_in_pool(masterform, sp_uid, mc_id, sp_sol)
-            if existing_mc_id != mc_id
-                @show "ERROR column already exist"
-            end
             
             @logmsg LogLevel(-2) string("Generated column : ", name)
 
-            # TODO: check if column exists
-            #== mc_id = getid(mc)
-            id_of_existing_mc = - 1
-            partialsol_matrix = getpartialsolmatrix(masterform)
-            for (col, col_members) in columns(partialsol_matrix)
-                if (col_members == partialsol_matrix[:, mc_id])
-                    id_of_existing_mc = col[1]
-                    break
-                end
-            end
-            if (id_of_existing_mc != mc_id)
-                @warn string("column already exists as", id_of_existing_mc)
-            end
-            ==#
         end
     end
 
@@ -368,12 +355,12 @@ function cg_main_loop(algo::ColumnGeneration,
         primal_bound = get_lp_primal_bound(algdata.incumbents)     
         cur_gap = gap(primal_bound, dual_bound)
         
-        if phase == 1 && ph_one_infeasible_db(dual_bound)
+        if phase == 1 && violates_feasibility_tol(dual_bound; tolerance = algo.feasibility_tol)
             algdata.is_feasible = false
             @logmsg LogLevel(0) "Phase one determines infeasibility."
             return ColumnGenerationRecord(algdata.incumbents, true)
         end
-        if nb_new_col == 0 || cur_gap < 0.00001 #_params_.relative_optimality_tolerance
+        if nb_new_col == 0 || cur_gap < algo.optimality_tol
             @logmsg LogLevel(0) "Column Generation Algorithm has converged." #nb_new_col cur_gap
             algdata.has_converged = true
             return ColumnGenerationRecord(algdata.incumbents, false)

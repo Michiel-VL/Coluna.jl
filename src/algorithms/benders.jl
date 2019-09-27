@@ -162,6 +162,7 @@ function check_if_cut_already_in_pool(masterform::Formulation,
     for (cut_id, cut) in columns(dual_bendsp_sols)
         #@show col
         factor = 1.0
+        scaling_in_place = false
         is_identical = true
         for (constr_id, constr_val) in getrecords(cut)
             #@show (var_id, var_val)
@@ -169,8 +170,9 @@ function check_if_cut_already_in_pool(masterform::Formulation,
                 is_identical = false
                 break
             end
-            if dual_sol[constr_id] != factor  * constr_val
-                if factor == 1.0
+            if dual_sol[constr_id] != factor * constr_val
+                if !scaling_in_place
+                    scaling_in_place = true
                     factor = dual_sol[constr_id] / constr_val
                 else
                     is_identical = false
